@@ -183,6 +183,9 @@ limitations under the License.
 #include "tsl/platform/threadpool.h"
 #include "tsl/profiler/lib/traceme.h"
 
+#if TENSORFLOW_USE_ROCM
+#include "rocm/rocm_config.h"
+#endif
 #if GOOGLE_CUDA
 #include "xla/service/gpu/gemm_algorithm_picker.h"
 #include "xla/service/gpu/triton_autotuner.h"
@@ -835,9 +838,15 @@ Status GpuCompiler::OptimizeHloPostLayoutAssignment(
     });
     pipeline.AddPass<HloPassFix<MoveCopyToUsers>>();
 
+#if GOOGLE_CUDA
     const stream_executor::CudaComputeCapability& compute_capability =
         std::get<se::CudaComputeCapability>(gpu_target_config.gpu_version);
+#elif TENSORFLOW_USE_ROCM
+    const stream_executor::RocmComputeCapability& compute_capability =
+        std::get<se::RocmComputeCapability>(gpu_target_config.gpu_version);
+#endif
 
+#if GOOGLE_CUDA
     // Rewrite GEMMs into custom calls.
     if (debug_options.xla_gpu_enable_triton_gemm() &&
         compute_capability.IsAtLeast(se::CudaComputeCapability::VOLTA)) {
@@ -847,6 +856,7 @@ Status GpuCompiler::OptimizeHloPostLayoutAssignment(
 
     // Rewrite GEMMs with broadcasted inputs as strided GEMMs.
     pipeline.AddPass<GemmBroadcastFoldingRewriter>();
+#endif
 
     if (debug_options.xla_gpu_normalize_layouts()) {
       pipeline.AddPass<LayoutNormalization>(&NormalizeLayoutForGpuCustomCalls);
@@ -1141,12 +1151,17 @@ GpuCompiler::CompileToTargetBinary(const HloModuleConfig& module_config,
   }
 
   // Test whether LinkModules is supported.
+#if GOOGLE_CUDA
   TF_ASSIGN_OR_RETURN(bool can_use_link_modules,
                       CanUseLinkModules(module_config));
   if (!can_use_link_modules) {
     return compile_single_module(llvm_module.get(), /*relocatable=*/false,
                                  /*shard_number=*/std::nullopt);
   }
+#elif TENSORFLOW_USE_ROCM
+  return compile_single_module(llvm_module.get(), /*relocatable=*/false,
+                              /*shard_number=*/std::nullopt);
+#endif
 
   std::vector<std::unique_ptr<llvm::Module>> llvm_modules;
   int num_functions = 0;
